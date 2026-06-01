@@ -1,11 +1,11 @@
 /**
  * @file main.cpp
  * @project BadIncESP - Модуль TX (Датчик и вычислитель)
- * @version 1.5
+ * @version 1.6
  * * @changelog
- * v1.5 - Замена старой EEPROM на современную Preferences.h.
- * - Интегрировано чтение настроек при старте и отложенная запись (через 15 секунд).
- * - Добавлено четкое определение версии и типа модуля в логе при старте.
+ * v1.6 - Реализовано плавное гашение угла по оси Y в диапазоне 5-45 градусов.
+ * - Добавлена калибровка нуля для оси Y (deltaZero_Y) с сохранением в Preferences.
+ * v1.5 - Замена старой EEPROM на Preferences.h. Отложенная запись 15 секунд.
  * v1.1.1 - Исправление BLE: включен ScanResponse(true) для передачи UUID.
  * v1.1 - Замена LoRa на BLE Server с Notify. Статусный RGB LED (GPIO 21).
  * v1.0 - Первичное портирование периферии (BNO080, Кнопка, Статусный LED).
@@ -16,7 +16,7 @@
  #include "SparkFun_BNO080_Arduino_Library.h"
  #include <OneButton.h>
  #include <FastLED.h>
- #include <Preferences.h> // Библиотека для работы с энергонезависимой памятью NVS
+ #include <Preferences.h> 
  
  // Подключение библиотек BLE
  #include <BLEDevice.h>
@@ -26,7 +26,7 @@
  
  // ================= ОПРЕДЕЛЕНИЕ ВЕРСИИ И ТИПА МОДУЛЯ =================
  #define MODULE_TYPE "TX (ДАТЧИК)"
- #define VERSION     "1.5"
+ #define VERSION     "1.6"
  
  // ================= НАСТРОЙКИ ПИНОВ ESP32-S3 =================
  #define PIN_I2C_SDA 5
@@ -55,6 +55,10 @@
  #define NUM_SENSITIVITIES 4    
  #define VERY_LONG_PRESS_MS 3000 
  
+ // ================= НАСТРОЙКИ ГАШЕНИЯ ПО ОСИ Y =================
+ const float DEADZONE_ANGLE_Y = 5.0f;      // До этого угла (градусы) влияние Y игнорируется
+ const float MAX_DAMPING_ANGLE_Y = 45.0f;  // При этом угле и выше, основной угол принудительно гасится в 0.0
+ 
  // Команды для связи
  #define CMD_BRIGHTNESS       100 
  #define CMD_SENSITIVITY      101 
@@ -66,7 +70,7 @@
  #define CMD_EEPROM_WRITE     113 
  
  // Настройки таймера сохранения памяти NVS
- #define WRITE_PREFERENCES_DELAY_MS 15000 // Задержка перед записью (мс)
+ #define WRITE_PREFERENCES_DELAY_MS 15000 
  Preferences prefs;
  bool writePrefsPending = false;
  uint32_t writePrefsTimer = 0;
@@ -88,6 +92,7 @@
  byte prevMode = -1; 
  float Roll = 0.0f;   
  float deltaZero = defaultDeltaZero; 
+ float deltaZero_Y = defaultDeltaZero; // Калибровочный ноль перпендикулярной оси Y
  boolean revers = defaultReverse;   
  byte curSensitivity = defaultSensitivity;    
  
@@ -128,27 +133,29 @@
  // ================= РАБОТА С ЭНЕРГОНЕЗАВИМОЙ ПАМЯТЬЮ (NVS) =================
  void loadSettings() {
    Serial.println("Чтение настроек из памяти NVS...");
-   prefs.begin("badinc", true); // Открываем пространство имен в режиме "только чтение"
+   prefs.begin("badinc", true); 
    
    curFade = prefs.getUChar("fade", defaultFade);
    curSensitivity = prefs.getUChar("sens", defaultSensitivity);
    revers = prefs.getBool("rev", defaultReverse);
    deltaZero = prefs.getFloat("zero", defaultDeltaZero);
+   deltaZero_Y = prefs.getFloat("zero_y", defaultDeltaZero); // Загрузка нуля оси Y
    
    prefs.end();
  
-   Serial.printf("Загружено: Яркость=%d, Чувствительность=%d, Реверс=%d, Ноль=%6.2f°\n", 
-                 curFade, curSensitivity, revers, deltaZero);
+   Serial.printf("Загружено: Яркость=%d, Чувствительность=%d, Реверс=%d, Ноль_X=%6.2f°, Ноль_Y=%6.2f°\n", 
+                 curFade, curSensitivity, revers, deltaZero, deltaZero_Y);
  }
  
  void saveSettings() {
    Serial.println("ФАКТИЧЕСКОЕ СОХРАНЕНИЕ настроек в память NVS...");
-   prefs.begin("badinc", false); // Открываем в режиме записи
+   prefs.begin("badinc", false); 
    
    prefs.putUChar("fade", curFade);
    prefs.putUChar("sens", curSensitivity);
    prefs.putBool("rev", revers);
    prefs.putFloat("zero", deltaZero);
+   prefs.putFloat("zero_y", deltaZero_Y); // Сохранение нуля оси Y
    
    prefs.end();
    Serial.println("Сохранение успешно выполнено.");
@@ -164,9 +171,8 @@
    if (writePrefsPending && (millis() > writePrefsTimer)) {
      writePrefsPending = false;
      saveSettings();
-     // Отправляем команду приёмнику, чтобы он тоже сохранился
      sendLoRaMessage(CMD_EEPROM_WRITE, 0);
-     flashFBLed(3); // Отмигиваем 3 раза, как в исходной логике
+     flashFBLed(3); 
      prevMode = -1; 
    }
  }
@@ -322,19 +328,38 @@
    } while (moving_status > 3);
  
    float delta0 = 0;
+   float delta0_Y = 0;
    for (int i = 0; i < 100; i++) {
-     delta0 += (usedAxis ? myIMU.getPitch() : myIMU.getRoll());
+     delta0   += (usedAxis ? myIMU.getPitch() : myIMU.getRoll());
+     delta0_Y += (usedAxis ? myIMU.getRoll() : myIMU.getPitch());
      delay(50);
    }
    deltaZero = (delta0 * 180.0 / PI) / 100.0;
-   Serial.printf("Калибровка выполнена. Новый ноль: %6.2f°\n", deltaZero);
+   deltaZero_Y = (delta0_Y * 180.0 / PI) / 100.0; // Одновременная фиксация нуля Y
+   Serial.printf("Калибровка выполнена. Новые нули: X=%6.2f°, Y=%6.2f°\n", deltaZero, deltaZero_Y);
  }
  
  void getNextRoll() {
    if (myIMU.dataAvailable()) {
-     Roll = (usedAxis ? myIMU.getPitch() : myIMU.getRoll());
-     Roll *= 57.29578; 
-     Roll -= deltaZero;
+     // 1. Получаем физические значения углов в градусах с учетом индивидуальных нулей
+     Roll = (usedAxis ? myIMU.getPitch() : myIMU.getRoll()) * 57.29578 - deltaZero;
+     float Pitch_Y = (usedAxis ? myIMU.getRoll() : myIMU.getPitch()) * 57.29578 - deltaZero_Y;
+ 
+     // 2. Вычисляем модуль отклонения по перпендикулярной оси Y
+     float absY = abs(Pitch_Y);
+     float dampingFactor = 1.0f; 
+ 
+     // 3. Линейная интерполяция коэффициента гашения
+     if (absY >= MAX_DAMPING_ANGLE_Y) {
+       dampingFactor = 0.0f; // Полное обнуление крена при 45 градусах тангажа и выше
+     } 
+     else if (absY > DEADZONE_ANGLE_Y) {
+       // Пропорциональное уменьшение множителя от 1.0 до 0.0
+       dampingFactor = 1.0f - ((absY - DEADZONE_ANGLE_Y) / (MAX_DAMPING_ANGLE_Y - DEADZONE_ANGLE_Y));
+     }
+ 
+     // 4. Модифицируем главный рабочий угол коэффициентом демпфирования
+     Roll *= dampingFactor;
    }
  }
  
@@ -352,7 +377,6 @@
    Serial.begin(115200);
    delay(2000); 
    
-   // Крупный лог-баннер версии при старте
    Serial.println("\n========================================");
    Serial.printf("=== ПРОЕКТ BadIncESP | МОДУЛЬ: %s ===\n", MODULE_TYPE);
    Serial.printf("=== ВЕРСИЯ ПРОШИВКИ: %s                  ===\n", VERSION);
@@ -365,7 +389,7 @@
    initWire();
    initButtons();
    initFBled();
-   loadSettings(); // Чтение параметров перед инициализацией датчика и радио
+   loadSettings(); 
    initIMU();
    initBLE();
    
@@ -376,7 +400,6 @@
  void loop() {
    buttonControl.tick();
    
-   // Логика управления статусом BLE соединения
    if (deviceConnected && !oldDeviceConnected) {
        oldDeviceConnected = true;
        setSysLed(CRGB::Blue); 
@@ -399,6 +422,6 @@
      prevMode = curMode;
    }
    
-   processPreferences(); // Неблокирующая проверка таймера сохранения параметров
-   delay(10); 
+   processPreferences(); 
+   delay(1); // Оптимизированный такт цикла
  }

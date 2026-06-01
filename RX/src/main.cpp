@@ -1,25 +1,21 @@
 /**
  * @file main.cpp
  * @project BadIncESP - Модуль RX (Индикатор)
- * @version 1.5
+ * @version 1.6
  * * @changelog
- * v1.5 - Замена старой EEPROM на Preferences.h.
- * - Интегрирована мгновенная запись при получении CMD_EEPROM_WRITE от TX.
- * - Добавлено четкое определение версии и типа модуля в логе при старте.
+ * v1.6 - Синхронизация версии экосистемы (логика вынесена на сторону TX).
+ * v1.5 - Замена старой EEPROM на Preferences.h. Мгновенная локальная запись.
  * v1.2.1 - Исправление BLE: асинхронный запуск сканера. Отладочный вывод статуса.
  * v1.2 - Внедрена поддержка двух аппаратных плат (WROOM и S3-Zero).
- * - Настроен сканер BLE и подписка на Notify от TX.
  * - Интегрирована защита от просадки напряжения при запуске (Brownout).
  */
 
  #include <Arduino.h>
  #include <FastLED.h>
  #include <BLEDevice.h>
- #include <Preferences.h> // Библиотека для работы с энергонезависимой памятью NVS
+ #include <Preferences.h> 
  
  // ================= ВЫБОР АППАРАТНОЙ ПЛАТЫ =================
- // РАСКОММЕНТИРУЙТЕ следующую строку для временной платы NodeMCU ESP32-WROOM
- // ЗАКОММЕНТИРУЙТЕ строку, когда придет штатная плата ESP32-S3-Zero
  #define USE_WROOM_BOARD
  
  #ifdef USE_WROOM_BOARD
@@ -32,7 +28,7 @@
  
  // ================= ОПРЕДЕЛЕНИЕ ВЕРСИИ И ТИПА МОДУЛЯ =================
  #define MODULE_TYPE "RX (ИНДИКАТОР)"
- #define VERSION     "1.5"
+ #define VERSION     "1.6"
  
  // ================= НАСТРОЙКИ BLE =================
  #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -122,7 +118,7 @@
  // ================= РАБОТА С ЭНЕРГОНЕЗАВИМОЙ ПАМЯТЬЮ (NVS) =================
  void loadSettings() {
    Serial.println("Чтение настроек из памяти NVS RX...");
-   prefs.begin("badinc_rx", true); // Только чтение
+   prefs.begin("badinc_rx", true); 
    
    curFade = prefs.getUChar("fade", defaultFade);
    curSensitivity = prefs.getUChar("sens", defaultSensitivity);
@@ -134,7 +130,7 @@
  
  void saveSettings() {
    Serial.println("Сохранение локальных копий параметров в NVS RX...");
-   prefs.begin("badinc_rx", false); // Режим записи
+   prefs.begin("badinc_rx", false); 
    
    prefs.putUChar("fade", curFade);
    prefs.putUChar("sens", curSensitivity);
@@ -158,7 +154,7 @@
    if (currentState == STATE_CONNECTED) {
      digitalWrite(PIN_SYS_LED, HIGH);
    } else {
-     digitalWrite(PIN_SYS_LED, (millis() / 500) % 2); // Мигание синего диода 1 Гц
+     digitalWrite(PIN_SYS_LED, (millis() / 500) % 2); 
    }
  #else
    static SystemState lastState = (SystemState)-1;
@@ -193,7 +189,7 @@
    void onConnect(BLEClient* pclient) { }
    void onDisconnect(BLEClient* pclient) {
      connected = false;
-     doScan = true; // Автоматическое возобновление сканирования при обрыве
+     doScan = true; 
      currentState = STATE_SCANNING;
      Serial.println("Потеряна связь с TX.");
    }
@@ -242,7 +238,7 @@
      return true;
  }
  
- // ================= ФУНКЦИИ ИНДИКАЦИИ (WS2812B) =================
+ // ================= ФУНКЦИИ ИНДИКАЦИИ =================
  void initMODS() {
    for (byte i = 0; i < NUM_MODES / 2; i++) {
      for (byte j = 0; j < NUM_LEDS; j++) {
@@ -270,7 +266,7 @@
  void initLEDs() {
    pinMode(PIN_LEDS, OUTPUT);
    FastLED.addLeds<WS2812B, PIN_LEDS, GRB>(leds, NUM_LEDS);
-   FastLED.setMaxPowerInVoltsAndMilliamps(5, 300); // Аппаратное ограничение тока
+   FastLED.setMaxPowerInVoltsAndMilliamps(5, 500); 
    FastLED.setBrightness(fades[curFade]);
  }
  
@@ -318,7 +314,7 @@
  void playGreeting() {
    Serial.println("Анимация приветствия...");
    uint8_t currentBrightness = fades[curFade];
-   FastLED.setBrightness(20); // Снижение яркости для защиты от просадки тока при старте
+   FastLED.setBrightness(32); 
  
    for (byte j = 0; j < 3; j++) {
      for (byte i = 0; i < NUM_LEDS; i++) {
@@ -346,9 +342,8 @@
  
  void processEEPROMwrite() {
    Serial.println("Получена команда записи. Выполняю сохранение в NVS RX...");
-   saveSettings(); // Сохранение локального состояния
+   saveSettings(); 
    
-   // Визуальное отображение записи (анимация с миганием центрального светодиода)
    for (byte i = 0; i < NUM_LEDS; i++) leds[i] = CRGB::Black;
    FastLED.show();
    delay(200);
@@ -412,7 +407,6 @@
    Serial.begin(115200);
    delay(2000); 
  
-   // Крупный лог-баннер версии при старте
    Serial.println("\n========================================");
    Serial.printf("=== ПРОЕКТ BadIncESP | МОДУЛЬ: %s ===\n", MODULE_TYPE);
    Serial.printf("=== ВЕРСИЯ ПРОШИВКИ: %s                  ===\n", VERSION);
@@ -423,7 +417,7 @@
    updateSysLed();
  
    initMODS();
-   loadSettings(); // Чтение сохраненных настроек перед инициализацией ленты
+   loadSettings(); 
    initLEDs();
    playGreeting();
  
@@ -433,7 +427,7 @@
    pBLEScan->setInterval(1349);
    pBLEScan->setWindow(449);
    pBLEScan->setActiveScan(true);
-   pBLEScan->start(0, nullptr, false); // Асинхронный запуск сканера
+   pBLEScan->start(0, nullptr, false); 
    
    currentState = STATE_SCANNING;
    nextStandByMillis = millis() + StandByTime;
@@ -443,14 +437,12 @@
  void loop() {
    updateSysLed(); 
  
-   // Вывод статуса в Serial раз в 2 секунды для контроля
    static unsigned long lastDebug = 0;
    if (millis() - lastDebug > 2000) {
        Serial.printf("Status: connected=%d, doScan=%d, doConnect=%d\n", connected, doScan, doConnect);
        lastDebug = millis();
    }
  
-   // Логика автоматического подключения
    if (doConnect == true) {
      Serial.println("Попытка соединения...");
      if (connectToServer()) {
@@ -462,7 +454,6 @@
      doConnect = false;
    }
    
-   // Возобновление сканирования при потере связи
    if (!connected && doScan) {
      Serial.println("Возобновление сканирования...");
      BLEDevice::getScan()->start(0, nullptr, false);
